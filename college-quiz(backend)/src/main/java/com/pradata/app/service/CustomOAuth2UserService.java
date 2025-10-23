@@ -9,8 +9,6 @@ import org.springframework.security.oauth2.core.OAuth2AuthenticationException;
 import org.springframework.security.oauth2.core.user.OAuth2User;
 import org.springframework.stereotype.Service;
 
-import java.util.Optional;
-
 @Service
 public class CustomOAuth2UserService extends DefaultOAuth2UserService {
 
@@ -19,25 +17,20 @@ public class CustomOAuth2UserService extends DefaultOAuth2UserService {
 
     @Override
     public OAuth2User loadUser(OAuth2UserRequest userRequest) throws OAuth2AuthenticationException {
-
         OAuth2User oAuth2User = super.loadUser(userRequest);
-
         String email = oAuth2User.getAttribute("email");
-        String name = oAuth2User.getAttribute("name");
-
         if (email == null)
             throw new OAuth2AuthenticationException("Email not found in OAuth2 provider account.");
 
-        Optional<User> existing = userDao.findByEmail(email);
-
-        if (existing.isEmpty()) {
-            User user = new User();
-            user.setEmail(email);
-            user.setName(name);
-            user.setRole("PARTICIPANT"); // Default role
-            //user.setRegisteredAt(LocalDateTime.now());
-            userDao.save(user);
-        }
+        // This service's only job is to ensure the user exists in our DB.
+        // The success handler will deal with token generation.
+        userDao.findByEmail(email).orElseGet(() -> {
+            User newUser = new User();
+            newUser.setEmail(email);
+            newUser.setName(oAuth2User.getAttribute("name"));
+            newUser.setRole("Student"); // Default role
+            return userDao.save(newUser);
+        });
 
         return oAuth2User;
     }

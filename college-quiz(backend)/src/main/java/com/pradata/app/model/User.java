@@ -10,13 +10,9 @@ public class User {
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
-
     private String name;
-
     @Column(unique = true)
     private String email;
-
-    private String role;  // "ADMIN", "QUIZMASTER", "PARTICIPANT"
-
-    //private LocalDateTime registeredAt;
+    // Roles: Student, Faculty, Admin
+    private String role;
 }
