@@ -3,7 +3,9 @@ package com.pradata.app.controller;
 import com.pradata.app.model.Quiz;
 import com.pradata.app.model.SubmissionResultDto;
 import com.pradata.app.service.QuizService;
+import jakarta.validation.Valid; // Import jakarta validation
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
@@ -16,23 +18,42 @@ public class QuizController {
     @Autowired
     private QuizService quizService;
 
-    @PostMapping
-    public ResponseEntity<Quiz> createOrUpdateQuiz(@RequestBody Quiz quiz, Authentication authentication) {
+    // --- Faculty/Admin Actions ---
+
+    @PostMapping // Create new quiz
+    public ResponseEntity<Quiz> createQuiz(@Valid @RequestBody Quiz quiz, Authentication authentication) { // Add @Valid
+        quiz.setId(null);
         return quizService.createOrUpdateQuiz(quiz, authentication.getName());
     }
 
-    @GetMapping
+    @PutMapping("/{id}") // Update existing quiz
+    public ResponseEntity<Quiz> updateQuiz(@PathVariable Integer id, @Valid @RequestBody Quiz quiz, Authentication authentication) { // Add @Valid
+        if (quiz.getId() != null && !quiz.getId().equals(id)) {
+            return new ResponseEntity<>(HttpStatus.BAD_REQUEST);
+        }
+        quiz.setId(id);
+        return quizService.createOrUpdateQuiz(quiz, authentication.getName());
+    }
+
+    @GetMapping // Get quizzes created by logged-in Faculty/Admin
     public ResponseEntity<List<Quiz>> getQuizzesForFaculty(Authentication authentication) {
         return quizService.getQuizzesByCreator(authentication.getName());
     }
 
-    @DeleteMapping("/{id}")
+    @DeleteMapping("/{id}") // Delete quiz (owner or Admin)
     public ResponseEntity<String> deleteQuiz(@PathVariable Integer id, Authentication authentication) {
         return quizService.deleteQuiz(id, authentication.getName());
     }
 
-    @GetMapping("/{quizId}/submissions")
+    @GetMapping("/{quizId}/submissions") // View submissions (owner or Admin)
     public ResponseEntity<List<SubmissionResultDto>> getSubmissionsForQuiz(@PathVariable Integer quizId, Authentication authentication) {
         return quizService.getSubmissionsForQuiz(quizId, authentication.getName());
+    }
+
+    // --- Endpoint for ALL Authenticated Users ---
+
+    @GetMapping("/assigned-to-me") // View quizzes assigned to the logged-in user
+    public ResponseEntity<List<Quiz>> getMyAssignedQuizzes(Authentication authentication) {
+        return quizService.getAssignedQuizzesForUser(authentication.getName());
     }
 }

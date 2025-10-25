@@ -1,0 +1,120 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer components {
+  .btn-primary {
+    @apply px-4 py-2 bg-primary-600 text-white rounded-lg font-medium shadow-lg 
+           hover:bg-primary-700 active:bg-primary-800 transition-all duration-200 
+           hover:shadow-xl focus:outline-none focus:ring-2 focus:ring-primary-500 
+           focus:ring-offset-2 dark:shadow-primary-900/30;
+  }
+
+  .btn-secondary {
+    @apply px-4 py-2 bg-gray-200 text-gray-800 rounded-lg font-medium shadow-md 
+           hover:bg-gray-300 active:bg-gray-400 transition-all duration-200 
+           dark:bg-gray-700 dark:text-gray-100 dark:hover:bg-gray-600;
+  }
+
+  .card {
+    @apply rounded-xl shadow-lg p-6 bg-white transition-all duration-200 
+           hover:shadow-xl dark:bg-gray-800 dark:shadow-gray-900/30;
+  }
+
+  .glass-card {
+    @apply bg-white/90 backdrop-blur-lg border border-gray-200/50 shadow-lg
+           dark:bg-gray-800/90 dark:border-gray-700/50;
+  }
+
+  .input-field {
+    @apply w-full px-4 py-2 rounded-lg border border-gray-300 focus:ring-2 
+           focus:ring-primary-500 focus:border-transparent transition duration-200
+           dark:bg-gray-700 dark:border-gray-600 dark:text-white 
+           dark:focus:ring-primary-400 dark:placeholder-gray-400;
+  }
+
+  .label {
+    @apply block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1;
+  }
+}
+
+@layer utilities {
+  .animate-fade-in {
+    animation: fadeIn 0.3s ease-out forwards;
+  }
+
+  .animate-slide-in {
+    animation: slideIn 0.3s ease-out forwards;
+  }
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes slideIn {
+  from {
+    opacity: 0;
+    transform: translateX(-20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+/* Custom scrollbar - Light mode */
+::-webkit-scrollbar {
+  width: 6px;
+}
+
+::-webkit-scrollbar-track {
+  @apply bg-gray-100;
+}
+
+::-webkit-scrollbar-thumb {
+  @apply bg-gray-300 rounded-sm;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  @apply bg-gray-400;
+}
+
+/* Custom scrollbar - Dark mode */
+.dark ::-webkit-scrollbar-track {
+  @apply bg-gray-800;
+}
+
+.dark ::-webkit-scrollbar-thumb {
+  @apply bg-gray-600;
+}
+
+.dark ::-webkit-scrollbar-thumb:hover {
+  @apply bg-gray-500;
+}
+
+/* Base styles */
+@layer base {
+  body {
+    @apply m-0 font-sans antialiased transition-colors duration-200;
+  }
+
+  /* Light mode */
+  :root {
+    @apply bg-gray-50 text-gray-900;
+  }
+
+  /* Dark mode */
+  :root.dark {
+    @apply bg-gray-900 text-gray-100;
+  }
+}

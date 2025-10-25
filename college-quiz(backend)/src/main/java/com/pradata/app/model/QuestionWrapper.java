@@ -2,8 +2,10 @@ package com.pradata.app.model;
 
 import lombok.AllArgsConstructor;
 import lombok.Data;
+import lombok.NoArgsConstructor;
 
 @Data
+@NoArgsConstructor
 @AllArgsConstructor
 public class QuestionWrapper {
     private int id;
@@ -12,6 +14,4 @@ public class QuestionWrapper {
     private String option2;
     private String option3;
     private String option4;
-
-
 }
