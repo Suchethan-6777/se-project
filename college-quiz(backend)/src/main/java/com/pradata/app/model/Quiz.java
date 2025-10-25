@@ -59,7 +59,7 @@ public class Quiz {
             name = "quiz_question", // Ensure this matches your actual DB table name
             joinColumns = @JoinColumn(name = "quiz_id"),
             inverseJoinColumns = @JoinColumn(name = "question_id"))
-    @JsonIgnore // Keep ignoring questions for list views for now
+    //@JsonIgnore // Keep ignoring questions for list views for now
     // Initialize the collection to prevent NullPointerExceptions
     private List<Question> questions = new ArrayList<>();
 
