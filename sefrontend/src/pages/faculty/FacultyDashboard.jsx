@@ -156,10 +156,10 @@ const FacultyDashboard = () => {
   return (
     <div className="space-y-6">
       {/* Backend Test - Remove this after testing */}
-      <BackendTest />
+      
       
       {/* Auth Test - Remove this after testing */}
-      <AuthTest />
+      
       
       {/* Header */}
       <div className="bg-white dark:bg-gray-800 rounded-xl shadow-lg p-8 border border-gray-200 dark:border-gray-700 transform hover:scale-[1.01] transition-all duration-200">

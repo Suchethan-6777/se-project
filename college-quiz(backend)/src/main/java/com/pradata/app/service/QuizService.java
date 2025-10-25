@@ -1,7 +1,18 @@
 package com.pradata.app.service;
 
+import java.time.LocalDateTime;
+import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Optional;
+import java.util.stream.Collectors;
+
 import com.pradata.app.model.*;
-import com.pradata.app.repository.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -9,15 +20,14 @@ import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.annotation.Transactional; // Ensure this is imported
 import org.springframework.util.CollectionUtils;
 import org.springframework.util.StringUtils;
 
-import java.time.LocalDateTime;
-import java.time.temporal.ChronoUnit;
-import java.util.*;
-import java.util.function.Predicate;
-import java.util.stream.Collectors;
+import com.pradata.app.repository.QuestionDao;
+import com.pradata.app.repository.QuizAttemptDao;
+import com.pradata.app.repository.QuizDao;
+import com.pradata.app.repository.UserDao;
 
 @Service
 public class QuizService {
@@ -30,98 +40,114 @@ public class QuizService {
     @Autowired private QuizAttemptDao quizAttemptDao;
 
     @Transactional
-    public ResponseEntity<Quiz> createOrUpdateQuiz(Quiz quiz, String userEmail) {
-        if (quiz == null || !StringUtils.hasText(userEmail)) {
-            logger.warn("createOrUpdateQuiz called with null quiz or email");
+// *** MODIFIED SIGNATURE ***
+    public ResponseEntity<Quiz> createOrUpdateQuiz(Integer quizId, QuizRequestDto quizDto, String userEmail) {
+        // --- 1. Initial Checks ---
+        if (quizDto == null || !StringUtils.hasText(userEmail)) {
+            logger.warn("createOrUpdateQuiz called with null DTO or email");
             return new ResponseEntity<>(HttpStatus.BAD_REQUEST);
         }
         Optional<User> creatorOpt = userDao.findByEmail(userEmail);
-        if (creatorOpt.isEmpty()) {
-            return new ResponseEntity<>(HttpStatus.FORBIDDEN); // User not found
-        }
+        if (creatorOpt.isEmpty()) { /* ... handle user not found ... */ }
         User creator = creatorOpt.get();
-
         boolean isAdmin = "Admin".equals(creator.getRole());
-        // --- FACULTY DOMAIN CHECK - COMMENTED OUT FOR TESTING ---
-        /*
-        boolean isFacultyWithDomain = "Faculty".equals(creator.getRole()) && userEmail.endsWith("@nitw.ac.in");
-        */
-        boolean isFacultyWithDomain = "Faculty".equals(creator.getRole()); // TESTING: Allow any faculty email
-        // --- END OF COMMENTED OUT BLOCK ---
+        boolean isFacultyWithDomain = "Faculty".equals(creator.getRole());
+        if (!(isAdmin || isFacultyWithDomain)) { /* ... handle forbidden ... */ }
 
-        if (!(isAdmin || isFacultyWithDomain)) {
-            logger.warn("Unauthorized attempt to create/update quiz by user: {}", userEmail);
-            return new ResponseEntity<>(HttpStatus.FORBIDDEN);
-        }
+        // --- 2. Fetch Questions based on IDs from DTO ---
+        List<Question> questionsToAssociate = new ArrayList<>();
+        List<Integer> questionIdsFromDto = quizDto.getQuestionIds() != null ? quizDto.getQuestionIds() : Collections.emptyList();
 
-        List<Question> fetchedQuestions = new ArrayList<>();
-        if (!CollectionUtils.isEmpty(quiz.getQuestions())) {
-            List<Integer> questionIds = quiz.getQuestions().stream()
-                    .filter(q -> q != null && q.getId() > 0)
-                    .map(Question::getId)
-                    .distinct()
-                    .collect(Collectors.toList());
-            if (!questionIds.isEmpty()) {
-                long count = questionDao.countByIdIn(questionIds);
-                if (count != questionIds.size()) {
-                    logger.warn("Attempt to create/update quiz (ID: {}) with non-existent question IDs by {}", quiz.getId(), userEmail);
-                    return new ResponseEntity<>(HttpStatus.BAD_REQUEST);
-                }
-                fetchedQuestions = questionDao.findAllById(questionIds);
-            }
-        }
-        quiz.setQuestions(fetchedQuestions);
+        logger.info("createOrUpdateQuiz - Received DTO with question IDs: {}", questionIdsFromDto); // Use DTO field
 
-        try {
-            if (quiz.getId() != null) { // Update
-                Optional<Quiz> existingQuizOpt = quizDao.findById(quiz.getId());
-                if (existingQuizOpt.isEmpty()) {
-                    logger.warn("Attempt to update non-existent quiz with ID: {}", quiz.getId());
-                    return new ResponseEntity<>(HttpStatus.NOT_FOUND);
-                }
-                Quiz existingQuiz = existingQuizOpt.get();
-                if (!isAdmin && (existingQuiz.getCreatedBy() == null || !existingQuiz.getCreatedBy().getEmail().equals(userEmail))) {
-                    logger.warn("Unauthorized attempt to update quiz {} by non-owner faculty: {}", quiz.getId(), userEmail);
-                    return new ResponseEntity<>(HttpStatus.FORBIDDEN);
-                }
-                quiz.setCreatedBy(existingQuiz.getCreatedBy());
-            } else { // Create
-                quiz.setCreatedBy(creator);
-            }
-
-            if (!StringUtils.hasText(quiz.getStatus())) quiz.setStatus("DRAFT");
-            if (quiz.getStartTime() != null && quiz.getEndTime() != null && quiz.getStartTime().isAfter(quiz.getEndTime())) {
-                logger.warn("Attempt to create/update quiz {} with start time after end time.", quiz.getId());
+        if (!questionIdsFromDto.isEmpty()) {
+            questionsToAssociate = questionDao.findAllById(questionIdsFromDto);
+            if (questionsToAssociate.size() != questionIdsFromDto.size()) {
+                logger.warn("createOrUpdateQuiz - Mismatch fetching questions from DTO IDs.");
                 return new ResponseEntity<>(HttpStatus.BAD_REQUEST);
             }
+            logger.info("createOrUpdateQuiz - Fetched {} Question entities from DB based on DTO IDs.", questionsToAssociate.size());
+        } else {
+            logger.info("createOrUpdateQuiz - DTO had no question IDs to associate.");
+        }
 
-            Quiz savedQuiz = quizDao.save(quiz);
-            logger.info("Quiz {} successfully by user {}", (savedQuiz.getId() == null ? "created with ID " + savedQuiz.getId() : "updated"), userEmail);
-            return new ResponseEntity<>(savedQuiz, (quiz.getId() == null) ? HttpStatus.CREATED : HttpStatus.OK);
+
+        // --- 3. Save Logic (Find/Create Entity, Map DTO, Save) ---
+        try {
+            Quiz quizToSave; // The JPA Entity
+
+            if (quizId != null) { // --- UPDATE PATH ---
+                Optional<Quiz> existingQuizOpt = quizDao.findById(quizId);
+                if (existingQuizOpt.isEmpty()) { /* ... handle not found ... */ }
+                quizToSave = existingQuizOpt.get(); // Load the managed entity
+
+                // Check ownership
+                if (!isAdmin && (quizToSave.getCreatedBy() == null || !quizToSave.getCreatedBy().getEmail().equals(userEmail))) {
+                    /* ... handle forbidden ... */
+                }
+
+                logger.info("Updating existing Quiz ID: {}", quizId);
+
+            } else { // --- CREATE PATH ---
+                quizToSave = new Quiz(); // Create a new entity instance
+                quizToSave.setCreatedBy(creator);
+                logger.info("Creating new Quiz.");
+            }
+
+            // *** MAP fields from DTO to the Entity ***
+            quizToSave.setTitle(quizDto.getTitle());
+            quizToSave.setDescription(quizDto.getDescription());
+            quizToSave.setSubject(quizDto.getSubject());
+            quizToSave.setDurationInMinutes(quizDto.getDurationInMinutes());
+            quizToSave.setTotalMarks(quizDto.getTotalMarks());
+            quizToSave.setStartTime(quizDto.getStartTime());
+            quizToSave.setEndTime(quizDto.getEndTime());
+            quizToSave.setAssignmentCriteria(quizDto.getAssignmentCriteria());
+            // Set status carefully (handle null/default)
+            quizToSave.setStatus(StringUtils.hasText(quizDto.getStatus()) ? quizDto.getStatus() : "DRAFT");
+
+
+            // *** Manage the collection on the entity ***
+            if (quizToSave.getQuestions() == null) { quizToSave.setQuestions(new ArrayList<>()); }
+            quizToSave.getQuestions().clear();
+            quizToSave.getQuestions().addAll(questionsToAssociate);
+            logger.info("Set {} questions on quizToSave object.", quizToSave.getQuestions().size());
+
+
+            // --- 4. Common Validation & Save ---
+            if (quizToSave.getStartTime() != null && quizToSave.getEndTime() != null && quizToSave.getStartTime().isAfter(quizToSave.getEndTime())) {
+                /* ... handle bad request ... */
+            }
+
+            logger.info("About to call quizDao.save() for quiz ID: {}", quizToSave.getId());
+            Quiz savedQuiz = quizDao.save(quizToSave); // Save the mapped entity
+            logger.info("Successfully saved quiz ID: {}. Associated questions count in object: {}", savedQuiz.getId(), savedQuiz.getQuestions().size());
+
+            return new ResponseEntity<>(savedQuiz, (quizId == null) ? HttpStatus.CREATED : HttpStatus.OK);
 
         } catch (Exception e) {
-            logger.error("Error saving quiz (ID: {}) for user {}: {}", quiz.getId(), userEmail, e.getMessage(), e);
+            logger.error("Error saving quiz from DTO (potential ID: {}): {}", quizId, e.getMessage(), e);
             return new ResponseEntity<>(HttpStatus.INTERNAL_SERVER_ERROR);
         }
     }
 
+    // Read methods use readOnly transaction for performance and LazyInitialization prevention
+    @Transactional(readOnly = true)
     public ResponseEntity<List<Quiz>> getQuizzesByCreator(String userEmail) {
         Optional<User> creatorOpt = userDao.findByEmail(userEmail);
-        if (creatorOpt.isEmpty()) return new ResponseEntity<>(HttpStatus.FORBIDDEN);
+        if (creatorOpt.isEmpty()) { return new ResponseEntity<>(HttpStatus.FORBIDDEN); }
         User creator = creatorOpt.get();
 
         boolean isAdmin = "Admin".equals(creator.getRole());
-        // --- FACULTY DOMAIN CHECK - COMMENTED OUT FOR TESTING ---
-        // boolean isFacultyWithDomain = "Faculty".equals(creator.getRole()) && userEmail.endsWith("@nitw.ac.in");
-        boolean isFacultyWithDomain = "Faculty".equals(creator.getRole()); // TESTING
-        // --- END OF COMMENTED OUT BLOCK ---
-
+        boolean isFacultyWithDomain = "Faculty".equals(creator.getRole());
         if (!(isAdmin || isFacultyWithDomain)) {
             logger.warn("Unauthorized attempt to get quizzes by creator: {}", userEmail);
             return new ResponseEntity<>(HttpStatus.FORBIDDEN);
         }
         try {
             List<Quiz> quizzes = quizDao.findByCreatedBy(creator);
+            // Note: Questions might be loaded due to EAGER fetch, but will be ignored by JSON due to @JsonIgnore
+            logger.info("Fetched {} quizzes for creator {}", quizzes.size(), userEmail);
             return new ResponseEntity<>(quizzes, HttpStatus.OK);
         } catch (Exception e) {
             logger.error("Error fetching quizzes for creator {}: {}", userEmail, e.getMessage(), e);
@@ -129,12 +155,12 @@ public class QuizService {
         }
     }
 
-    @Transactional
+    @Transactional // Needed for deleting attempts and the quiz
     public ResponseEntity<String> deleteQuiz(Integer quizId, String userEmail) {
-        if (quizId == null) return new ResponseEntity<>("Quiz ID cannot be null", HttpStatus.BAD_REQUEST);
+        if (quizId == null) { return new ResponseEntity<>("Quiz ID cannot be null", HttpStatus.BAD_REQUEST); }
 
         Optional<Quiz> quizOpt = quizDao.findById(quizId);
-        if (quizOpt.isEmpty()) return new ResponseEntity<>("Quiz not found", HttpStatus.NOT_FOUND);
+        if (quizOpt.isEmpty()) { return new ResponseEntity<>("Quiz not found", HttpStatus.NOT_FOUND); }
 
         Optional<User> userOpt = userDao.findByEmail(userEmail);
         if (userOpt.isEmpty()) {
@@ -144,12 +170,9 @@ public class QuizService {
         User user = userOpt.get();
 
         boolean isAdmin = "Admin".equals(user.getRole());
+        // Quiz object is present, safe to get()
         boolean isOwner = quizOpt.get().getCreatedBy() != null && quizOpt.get().getCreatedBy().getEmail().equals(userEmail);
-
-        // --- FACULTY DOMAIN CHECK - COMMENTED OUT FOR TESTING ---
-        // boolean isFacultyOwnerWithDomain = isOwner && "Faculty".equals(user.getRole()) && userEmail.endsWith("@nitw.ac.in");
-        boolean isFacultyOwnerWithDomain = isOwner && "Faculty".equals(user.getRole()); // TESTING
-        // --- END OF COMMENTED OUT BLOCK ---
+        boolean isFacultyOwnerWithDomain = isOwner && "Faculty".equals(user.getRole());
 
         if (!isAdmin && !isFacultyOwnerWithDomain) {
             logger.warn("Unauthorized attempt to delete quiz {} by user {}", quizId, userEmail);
@@ -157,12 +180,14 @@ public class QuizService {
         }
 
         try {
-            quizAttemptDao.deleteByQuizId(quizId); // Call this first
-            quizDao.deleteById(quizId);
-            logger.info("Quiz {} deleted by user {}", quizId, userEmail);
+            logger.info("Attempting to delete attempts for Quiz ID: {}", quizId);
+            quizAttemptDao.deleteByQuizId(quizId); // Delete related attempts first
+            logger.info("Attempting to delete Quiz ID: {}", quizId);
+            quizDao.deleteById(quizId); // Then delete the quiz
+            logger.info("Quiz {} deleted successfully by user {}", quizId, userEmail);
             return new ResponseEntity<>("Quiz deleted successfully", HttpStatus.OK);
         } catch (DataIntegrityViolationException e) {
-            logger.error("Cannot delete quiz {} because it has related data: {}", quizId, e.getMessage());
+            logger.error("Cannot delete quiz {} because it has related data (FK constraint): {}", quizId, e.getMessage());
             return new ResponseEntity<>("Cannot delete quiz as it may have existing attempts or other dependencies.", HttpStatus.CONFLICT);
         } catch (Exception e) {
             logger.error("Error deleting quiz {}: {}", quizId, e.getMessage(), e);
@@ -170,19 +195,18 @@ public class QuizService {
         }
     }
 
-    // --- THIS IS THE CORRECTED AND EFFICIENT METHOD ---
+    @Transactional(readOnly = true)
     public ResponseEntity<List<Quiz>> getAssignedQuizzesForUser(String userEmail) {
         if (!StringUtils.hasText(userEmail)) {
             return new ResponseEntity<>(Collections.emptyList(), HttpStatus.BAD_REQUEST);
         }
 
-        LocalDateTime now = LocalDateTime.now();
-        List<Quiz> allActiveQuizzes;
+        List<Quiz> allPublishedQuizzes;
         try {
-            // 1. Fetch ONLY published, active quizzes from the DB
-            allActiveQuizzes = quizDao.findByStatusAndStartTimeBeforeAndEndTimeAfter("PUBLISHED", now, now);
+            allPublishedQuizzes = quizDao.findByStatus("PUBLISHED");
+            logger.debug("Fetched {} published quizzes.", allPublishedQuizzes.size());
         } catch (Exception e) {
-            logger.error("Error fetching active quizzes: {}", e.getMessage(), e);
+            logger.error("Error fetching published quizzes: {}", e.getMessage(), e);
             return new ResponseEntity<>(Collections.emptyList(), HttpStatus.INTERNAL_SERVER_ERROR);
         }
 
@@ -190,152 +214,164 @@ public class QuizService {
         final String userIdentifier;
         final boolean isStudent = userEmailLower.endsWith("@student.nitw.ac.in");
 
-        // 2. Determine the user's identifier (roll number or email)
         if (isStudent) {
             String emailPrefix = userEmailLower.substring(0, userEmailLower.indexOf("@student.nitw.ac.in"));
+            // Assuming roll number format like 'vsYYdeptXXX' -> 'YYdeptXXX'
             userIdentifier = (emailPrefix.length() > 2) ? emailPrefix.substring(2) : emailPrefix;
         } else {
-            userIdentifier = userEmailLower;
+            userIdentifier = userEmailLower; // Non-students identified by full email
         }
 
         if (userIdentifier.isEmpty()) {
             logger.warn("Could not extract identifier for email: {}", userEmail);
-            return new ResponseEntity<>(Collections.emptyList(), HttpStatus.OK);
+            return new ResponseEntity<>(Collections.emptyList(), HttpStatus.OK); // Return empty, not error
         }
+        logger.debug("User {} identified as {} with identifier '{}'", userEmail, isStudent ? "Student" : "Non-Student", userIdentifier);
 
-        // 3. Filter the active quizzes in memory based on assignment criteria
-        List<Quiz> assignedQuizzes = allActiveQuizzes.stream()
+
+        List<Quiz> assignedQuizzes = allPublishedQuizzes.stream()
                 .filter(quiz -> {
+                    // Basic validity check
+                    if (quiz.getStartTime() == null || quiz.getEndTime() == null) {
+                        logger.trace("Filtering out Quiz ID {} due to null start/end time.", quiz.getId());
+                        return false;
+                    }
+
+                    // Check assignment criteria
                     String criteriaString = quiz.getAssignmentCriteria();
-                    if (!StringUtils.hasText(criteriaString)) return true; // No criteria = available to all
+                    if (!StringUtils.hasText(criteriaString)) {
+                        logger.trace("Quiz ID {} matches user {} (no criteria).", quiz.getId(), userEmail);
+                        return true; // No criteria = available to all PUBLISHED quizzes
+                    }
 
                     List<String> criteriaList = Arrays.asList(criteriaString.toLowerCase().split("\\s*,\\s*"));
 
-                    return criteriaList.stream().anyMatch(criteria ->
-                            isStudent ? (userIdentifier.startsWith(criteria) || userIdentifier.equals(criteria)) // Student logic
-                                    : userIdentifier.equals(criteria) // Non-student logic (exact email match)
+                    boolean matches = criteriaList.stream().anyMatch(criteria ->
+                            isStudent
+                                    ? (userIdentifier.startsWith(criteria) || userIdentifier.equals(criteria) || userEmailLower.equals(criteria)) // Student: prefix, roll, or full email
+                                    : userIdentifier.equals(criteria) // Non-Student: exact email match
                     );
+                    if (matches) {
+                        logger.trace("Quiz ID {} matches user {} based on criteria.", quiz.getId(), userEmail);
+                    } else {
+                        logger.trace("Quiz ID {} does NOT match user {} based on criteria.", quiz.getId(), userEmail);
+                    }
+                    return matches;
                 })
                 .collect(Collectors.toList());
 
-        // 4. Add Drafts (only for Admin or creator)
-        // This is safer because it only runs if the user is not a student
-        // and doesn't make DB calls in a loop.
-        if (!isStudent) {
-            try {
-                Optional<User> callingUserOpt = userDao.findByEmail(userEmailLower);
-                if (callingUserOpt.isPresent()) {
-                    boolean isCallerAdmin = "Admin".equals(callingUserOpt.get().getRole());
-                    List<Quiz> draftQuizzes = quizDao.findByStatus("DRAFT");
-
-                    for (Quiz draft : draftQuizzes) {
-                        boolean isOwner = draft.getCreatedBy() != null && draft.getCreatedBy().getEmail() != null &&
-                                draft.getCreatedBy().getEmail().equalsIgnoreCase(userEmailLower);
-
-                        if (isCallerAdmin || isOwner) {
-                            // Add if not already in the list (e.g., if a published quiz was also a draft somehow)
-                            if (assignedQuizzes.stream().noneMatch(q -> q.getId().equals(draft.getId()))) {
-                                assignedQuizzes.add(draft);
-                            }
-                        }
-                    }
-                }
-            } catch (Exception e) {
-                logger.error("Error fetching draft quizzes for user {}: {}", userEmail, e.getMessage(), e);
-                // Don't fail the whole request, just return what we have
-            }
-        }
-
+        logger.info("Found {} assigned quizzes for user {}", assignedQuizzes.size(), userEmail);
         return new ResponseEntity<>(assignedQuizzes, HttpStatus.OK);
     }
-    // --- END OF CORRECTED METHOD ---
 
-    // This is the old, incorrect method. Remove it.
-    // public ResponseEntity<List<Quiz>> getAvailableQuizzes() {
-    //    return new ResponseEntity<>(quizDao.findByStatusAndStartTimeBeforeAndEndTimeAfter("PUBLISHED", LocalDateTime.now(), LocalDateTime.now()), HttpStatus.OK);
-    // }
-
-    @Transactional
+    @Transactional // Creates a QuizAttempt, so needs a transaction
     public ResponseEntity<?> startQuiz(int quizId, String userEmail) {
         Optional<Quiz> quizOpt = quizDao.findById(quizId);
-        User student = userDao.findByEmail(userEmail).orElse(null);
-        if (quizOpt.isEmpty() || student == null) {
-            logger.warn("Attempt to start non-existent quiz {} or by non-existent user {}", quizId, userEmail);
-            return new ResponseEntity<>(HttpStatus.NOT_FOUND);
+        Optional<User> studentOpt = userDao.findByEmail(userEmail); // Fetch Optional first
+
+        if (quizOpt.isEmpty()) {
+            logger.warn("Attempt to start non-existent quiz ID {}", quizId);
+            return new ResponseEntity<>("Quiz not found.", HttpStatus.NOT_FOUND);
         }
+        if (studentOpt.isEmpty()) {
+            logger.warn("Attempt to start quiz {} by non-existent user {}", quizId, userEmail);
+            // Should not happen if authenticated, but good check
+            return new ResponseEntity<>("User not found.", HttpStatus.NOT_FOUND);
+        }
+
         Quiz quiz = quizOpt.get();
+        User student = studentOpt.get();
 
-        boolean alreadyAttempted = quizAttemptDao.existsByQuizIdAndStudentIdAndSubmissionTimeIsNotNull(quizId, student.getId());
-        if (alreadyAttempted) {
+        // Check if already submitted
+        boolean alreadySubmitted = quizAttemptDao.existsByQuizIdAndStudentIdAndSubmissionTimeIsNotNull(quizId, student.getId());
+        if (alreadySubmitted) {
             logger.info("User {} attempted to restart already submitted quiz {}", userEmail, quizId);
-            return new ResponseEntity<>("Quiz already attempted", HttpStatus.CONFLICT);
+            return new ResponseEntity<>("Quiz already submitted.", HttpStatus.CONFLICT); // Use CONFLICT for already done
         }
 
+        // Check quiz status and time window
         LocalDateTime now = LocalDateTime.now();
         if (!"PUBLISHED".equals(quiz.getStatus())) {
             logger.info("User {} attempted to start non-published quiz {}", userEmail, quizId);
-            return new ResponseEntity<>("Quiz is not published or is no longer active", HttpStatus.FORBIDDEN);
+            return new ResponseEntity<>("Quiz is not active.", HttpStatus.FORBIDDEN);
         }
         if (quiz.getStartTime() == null || quiz.getEndTime() == null) {
-            logger.info("User {} attempted to start quiz {} which has no time window defined", userEmail, quizId);
-            return new ResponseEntity<>("Quiz is not available for attempts (time window not defined)", HttpStatus.FORBIDDEN);
+            logger.info("User {} attempted to start quiz {} with no time window", userEmail, quizId);
+            return new ResponseEntity<>("Quiz time window not defined.", HttpStatus.FORBIDDEN);
         }
         if (now.isBefore(quiz.getStartTime())) {
             logger.info("User {} attempted to start quiz {} before start time", userEmail, quizId);
-            return new ResponseEntity<>("Quiz has not started yet", HttpStatus.FORBIDDEN);
+            return new ResponseEntity<>("Quiz has not started yet.", HttpStatus.FORBIDDEN);
         }
         if (now.isAfter(quiz.getEndTime())) {
             logger.info("User {} attempted to start quiz {} after end time", userEmail, quizId);
-            return new ResponseEntity<>("Quiz has already ended", HttpStatus.FORBIDDEN);
+            return new ResponseEntity<>("Quiz entry window has closed.", HttpStatus.FORBIDDEN);
         }
 
+        // --- Create Attempt ---
         QuizAttempt attempt = new QuizAttempt();
         attempt.setQuiz(quiz);
         attempt.setStudent(student);
-        attempt.setStartTime(LocalDateTime.now());
+        attempt.setStartTime(LocalDateTime.now()); // Set start time *now*
         QuizAttempt savedAttempt;
         try {
             savedAttempt = quizAttemptDao.save(attempt);
         } catch (Exception e) {
             logger.error("Error saving new quiz attempt for user {}, quiz {}: {}", userEmail, quizId, e.getMessage(), e);
-            return new ResponseEntity<>(HttpStatus.INTERNAL_SERVER_ERROR);
+            return new ResponseEntity<>("Failed to initialize quiz attempt.", HttpStatus.INTERNAL_SERVER_ERROR);
         }
 
+        // --- Load and Prepare Questions ---
         List<QuestionWrapper> questionsForUser = new ArrayList<>();
         List<Question> originalQuestions;
         try {
+            logger.info("Loading questions for Quiz ID: {} within startQuiz transaction.", quizId);
+            // Access questions within the transaction. EAGER fetch should mean they are loaded.
+            // If LAZY, this access triggers loading.
             originalQuestions = new ArrayList<>(quiz.getQuestions());
-            originalQuestions.size(); // Force initialization
-        } catch (Exception e) {
-            logger.error("Error loading questions for quiz {} during start attempt: {}", quizId, e.getMessage(), e);
-            return new ResponseEntity<>(HttpStatus.INTERNAL_SERVER_ERROR);
+
+            // Explicitly check size to be sure
+            if (originalQuestions.isEmpty()) {
+                logger.error("CRITICAL: Quiz ID {} has ZERO questions associated after loading!", quizId);
+                // Should not proceed if no questions - rollback will happen due to exception/return
+                return new ResponseEntity<>("Quiz has no questions configured.", HttpStatus.INTERNAL_SERVER_ERROR); // Or BAD_REQUEST
+            }
+            logger.info("Successfully loaded {} questions for Quiz ID: {}", originalQuestions.size(), quizId);
+
+            // Shuffle questions and their options
+            Collections.shuffle(originalQuestions);
+            for (Question q : originalQuestions) {
+                List<String> options = new ArrayList<>(Arrays.asList(q.getOption1(), q.getOption2(), q.getOption3(), q.getOption4()));
+                options.removeIf(Objects::isNull); // Remove null options if any
+                Collections.shuffle(options);
+                questionsForUser.add(new QuestionWrapper(
+                        q.getId(),
+                        q.getQuestionTitle(),
+                        options.size() > 0 ? options.get(0) : null,
+                        options.size() > 1 ? options.get(1) : null,
+                        options.size() > 2 ? options.get(2) : null,
+                        options.size() > 3 ? options.get(3) : null));
+            }
+        } catch (Exception e) { // Catch potential LazyInitializationException if transaction setup fails
+            logger.error("Error loading/processing questions for quiz {} during start attempt: {}", quizId, e.getMessage(), e);
+            return new ResponseEntity<>("Error preparing quiz questions.", HttpStatus.INTERNAL_SERVER_ERROR);
         }
 
-
-        Collections.shuffle(originalQuestions);
-
-        for (Question q : originalQuestions) {
-            List<String> options = new ArrayList<>(Arrays.asList(q.getOption1(), q.getOption2(), q.getOption3(), q.getOption4()));
-            options.removeIf(Objects::isNull);
-            Collections.shuffle(options);
-            questionsForUser.add(new QuestionWrapper(q.getId(), q.getQuestionTitle(),
-                    options.size() > 0 ? options.get(0) : null,
-                    options.size() > 1 ? options.get(1) : null,
-                    options.size() > 2 ? options.get(2) : null,
-                    options.size() > 3 ? options.get(3) : null));
-        }
-
+        // --- Prepare and Send Response ---
         Map<String, Object> response = new HashMap<>();
         response.put("attemptId", savedAttempt.getId());
-        response.put("quiz", quiz);
-        response.put("questions", questionsForUser);
-        logger.info("User {} started attempt {} for quiz {}", userEmail, savedAttempt.getId(), quizId);
+        // Do NOT send the full Quiz entity back here if it causes issues.
+        // Send only necessary info if needed, or rely on frontend context.
+        // response.put("quiz", quiz); // Maybe remove this if causing serialization issues downstream
+        response.put("questions", questionsForUser); // Send the prepared, shuffled wrappers
+
+        logger.info("User {} started attempt {} for quiz {}. Sending {} questions.", userEmail, savedAttempt.getId(), quizId, questionsForUser.size());
         return new ResponseEntity<>(response, HttpStatus.OK);
     }
 
-    @Transactional
+    @Transactional // Updates QuizAttempt score and submission time
     public ResponseEntity<Integer> calculateResult(Long attemptId, List<Response> responses, String userEmail) {
-        if (attemptId == null) return new ResponseEntity<>(-1, HttpStatus.BAD_REQUEST);
+        if (attemptId == null) { return new ResponseEntity<>(-1, HttpStatus.BAD_REQUEST); }
 
         Optional<QuizAttempt> attemptOpt = quizAttemptDao.findById(attemptId);
         if (attemptOpt.isEmpty()) {
@@ -343,75 +379,95 @@ public class QuizService {
             return new ResponseEntity<>(-1, HttpStatus.NOT_FOUND);
         }
         QuizAttempt attempt = attemptOpt.get();
+
+        // Verify ownership
         User student = attempt.getStudent();
         if (student == null || !student.getEmail().equals(userEmail)) {
             logger.warn("Unauthorized attempt to submit attempt ID {} by user {}", attemptId, userEmail);
             return new ResponseEntity<>(-1, HttpStatus.FORBIDDEN);
         }
 
-
+        // Check if already submitted
         if (attempt.getSubmissionTime() != null) {
-            logger.info("Attempt {} already submitted, returning existing score.", attemptId);
-            return new ResponseEntity<>(attempt.getScore() != null ? attempt.getScore() : -1, HttpStatus.OK);
+            logger.info("Attempt {} already submitted by user {}, returning existing score.", attemptId, userEmail);
+            return new ResponseEntity<>(attempt.getScore() != null ? attempt.getScore() : 0, HttpStatus.OK); // Return 0 if score somehow null
         }
 
+        // Check timing relative to attempt start time
         Quiz quiz = attempt.getQuiz();
         if (quiz == null) {
             logger.error("Quiz object not found for attempt ID {}", attemptId);
+            // Attempt is corrupt, should ideally not happen
             return new ResponseEntity<>(-1, HttpStatus.INTERNAL_SERVER_ERROR);
         }
-        long minutesElapsed = ChronoUnit.MINUTES.between(attempt.getStartTime(), LocalDateTime.now());
+        LocalDateTime submissionRequestTime = LocalDateTime.now();
+        long minutesElapsed = ChronoUnit.MINUTES.between(attempt.getStartTime(), submissionRequestTime);
+        long allowedDuration = quiz.getDurationInMinutes();
+        // Allow a small grace period (e.g., 1 minute) for network latency etc.
+        long gracePeriodMinutes = 1;
 
-        if (minutesElapsed > quiz.getDurationInMinutes() + 1) {
-            logger.info("Attempt {} submitted late by user {}", attemptId, userEmail);
-            attempt.setScore(0);
-            attempt.setSubmissionTime(LocalDateTime.now());
-            quizAttemptDao.save(attempt);
-            return new ResponseEntity<>(0, HttpStatus.REQUEST_TIMEOUT);
-        }
-
-        List<Question> questions = quiz.getQuestions();
-        if (CollectionUtils.isEmpty(questions)) {
-            logger.warn("Quiz {} for attempt {} has no questions during calculation.", quiz.getId(), attemptId);
-            attempt.setScore(0);
-            attempt.setSubmissionTime(LocalDateTime.now());
-            quizAttemptDao.save(attempt);
-            return new ResponseEntity<>(0, HttpStatus.OK);
-        }
-        Map<Integer, String> correctAnswers = new HashMap<>();
-        for(Question q : questions) correctAnswers.put(q.getId(), q.getRightAnswer());
-
-        int score = 0;
-        if (responses != null) {
-            for (Response res : responses) {
-                if (correctAnswers.containsKey(res.getId()) &&
-                        res.getResponse() != null &&
-                        correctAnswers.get(res.getId()).equals(res.getResponse())) {
-                    score++;
-                }
+        if (minutesElapsed > (allowedDuration + gracePeriodMinutes)) {
+            logger.warn("Attempt {} submitted late by user {}. Elapsed: {} mins, Allowed: {} mins.", attemptId, userEmail, minutesElapsed, allowedDuration);
+            attempt.setScore(0); // Mark score as 0 for late submission
+            attempt.setSubmissionTime(submissionRequestTime); // Record actual submission time
+            try {
+                quizAttemptDao.save(attempt);
+                // Return HTTP 408 Request Timeout to indicate lateness clearly
+                return new ResponseEntity<>(0, HttpStatus.REQUEST_TIMEOUT);
+            } catch (Exception e) {
+                logger.error("Error saving late submission score for attempt {}: {}", attemptId, e.getMessage(), e);
+                return new ResponseEntity<>(-1, HttpStatus.INTERNAL_SERVER_ERROR);
             }
         }
 
-        attempt.setScore(score);
-        attempt.setSubmissionTime(LocalDateTime.now());
+        // --- Calculate Score ---
+        List<Question> questions = quiz.getQuestions(); // EAGER fetch should provide these
+        if (CollectionUtils.isEmpty(questions)) {
+            logger.warn("Quiz {} for attempt {} has no questions during calculation.", quiz.getId(), attemptId);
+            attempt.setScore(0); // Score is 0 if no questions
+        } else {
+            // Create map of correct answers for efficient lookup
+            Map<Integer, String> correctAnswers = new HashMap<>();
+            for(Question q : questions) {
+                correctAnswers.put(q.getId(), q.getRightAnswer());
+            }
+
+            int score = 0;
+            if (responses != null) {
+                for (Response res : responses) {
+                    if (res != null &&
+                            correctAnswers.containsKey(res.getId()) &&
+                            res.getResponse() != null && // Check user response string
+                            correctAnswers.get(res.getId()).equals(res.getResponse())) {
+                        score++;
+                    }
+                }
+            }
+            attempt.setScore(score);
+            logger.info("Calculated score for attempt {}: {} / {}", attemptId, score, questions.size());
+        }
+
+        // --- Save Result ---
+        attempt.setSubmissionTime(submissionRequestTime); // Set submission time
         try {
             quizAttemptDao.save(attempt);
-            logger.info("Attempt {} submitted by user {} with score {}", attemptId, userEmail, score);
-            return new ResponseEntity<>(score, HttpStatus.OK);
+            logger.info("Attempt {} submitted successfully by user {} with score {}", attemptId, userEmail, attempt.getScore());
+            return new ResponseEntity<>(attempt.getScore(), HttpStatus.OK);
         } catch (Exception e) {
-            logger.error("Error saving score for attempt {}: {}", attemptId, e.getMessage(), e);
+            logger.error("Error saving final score for attempt {}: {}", attemptId, e.getMessage(), e);
             return new ResponseEntity<>(-1, HttpStatus.INTERNAL_SERVER_ERROR);
         }
     }
 
+    @Transactional(readOnly = true)
     public ResponseEntity<List<SubmissionResultDto>> getSubmissionsForQuiz(Integer quizId, String userEmail) {
-        if (quizId == null) return new ResponseEntity<>(HttpStatus.BAD_REQUEST);
+        if (quizId == null) { return new ResponseEntity<>(HttpStatus.BAD_REQUEST); }
 
         Optional<Quiz> quizOpt = quizDao.findById(quizId);
-        if (quizOpt.isEmpty()) return new ResponseEntity<>(HttpStatus.NOT_FOUND);
+        if (quizOpt.isEmpty()) { return new ResponseEntity<>(HttpStatus.NOT_FOUND); }
 
         Optional<User> userOpt = userDao.findByEmail(userEmail);
-        if (userOpt.isEmpty()) return new ResponseEntity<>(HttpStatus.FORBIDDEN);
+        if (userOpt.isEmpty()) { return new ResponseEntity<>(HttpStatus.FORBIDDEN); }
         User user = userOpt.get();
 
         boolean isAdmin = "Admin".equals(user.getRole());
@@ -424,32 +480,40 @@ public class QuizService {
 
         try {
             List<QuizAttempt> attempts = quizAttemptDao.findByQuizId(quizId);
+            logger.info("Fetched {} attempts for Quiz ID {}", attempts.size(), quizId);
+
+            // Filter attempts to include only submitted ones with valid related data
             List<SubmissionResultDto> results = attempts.stream()
                     .filter(a -> a.getSubmissionTime() != null && a.getStudent() != null && a.getQuiz() != null)
                     .map(attempt -> new SubmissionResultDto(
-                            attempt.getStudent().getName(),
+                            attempt.getStudent().getName(), // Requires Student to be loaded
                             attempt.getScore(),
-                            attempt.getQuiz().getTotalMarks(),
+                            attempt.getQuiz().getTotalMarks(), // Requires Quiz to be loaded
                             attempt.getSubmissionTime()))
                     .collect(Collectors.toList());
+            logger.info("Returning {} submission results for Quiz ID {}", results.size(), quizId);
             return new ResponseEntity<>(results, HttpStatus.OK);
-        } catch (Exception e) {
-            logger.error("Error fetching submissions for quiz {}: {}", quizId, e.getMessage(), e);
+        } catch (Exception e) { // Catch potential LazyInitializationExceptions if entities aren't loaded
+            logger.error("Error fetching or processing submissions for quiz {}: {}", quizId, e.getMessage(), e);
             return new ResponseEntity<>(HttpStatus.INTERNAL_SERVER_ERROR);
         }
     }
 
+    @Transactional(readOnly = true)
     public ResponseEntity<QuizAttempt> getStudentAttempt(Long attemptId, String userEmail) {
-        if (attemptId == null || !StringUtils.hasText(userEmail)) return new ResponseEntity<>(HttpStatus.BAD_REQUEST);
+        if (attemptId == null || !StringUtils.hasText(userEmail)) { return new ResponseEntity<>(HttpStatus.BAD_REQUEST); }
 
         Optional<QuizAttempt> attemptOpt = quizAttemptDao.findById(attemptId);
-        if (attemptOpt.isEmpty()) return new ResponseEntity<>(HttpStatus.NOT_FOUND);
+        if (attemptOpt.isEmpty()) { return new ResponseEntity<>(HttpStatus.NOT_FOUND); }
         QuizAttempt attempt = attemptOpt.get();
 
+        // Verify ownership (student can only view their own attempts)
         if (attempt.getStudent() == null || !attempt.getStudent().getEmail().equals(userEmail)) {
-            logger.warn("Unauthorized attempt to view attempt {} by user {}", attemptId, userEmail);
+            logger.warn("Unauthorized attempt by user {} to view attempt {} owned by {}",
+                    userEmail, attemptId, attempt.getStudent() != null ? attempt.getStudent().getEmail() : "null");
             return new ResponseEntity<>(HttpStatus.FORBIDDEN);
         }
+        // Transaction ensures related entities (like Quiz, Student) can be accessed if needed by Jackson
         return new ResponseEntity<>(attempt, HttpStatus.OK);
     }
 }

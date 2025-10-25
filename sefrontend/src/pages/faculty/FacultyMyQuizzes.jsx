@@ -143,7 +143,7 @@ const FacultyMyQuizzes = () => {
       </div>
 
       {/* Filter Tabs */}
-      <div className="bg-white rounded-lg shadow-sm p-6">
+      <div className="bg-white dark:bg-gray-800 rounded-lg shadow-sm p-6">
         <div className="flex space-x-1 bg-gray-100 p-1 rounded-lg">
           {[
             { key: 'all', label: 'All', count: quizzes.length },
@@ -168,7 +168,7 @@ const FacultyMyQuizzes = () => {
       </div>
 
       {/* Quizzes Table */}
-      <div className="bg-white rounded-lg shadow-sm overflow-hidden">
+      <div className="bg-white  rounded-lg shadow-sm overflow-hidden">
         {filteredQuizzes.length === 0 ? (
           <div className="p-12 text-center">
             <svg className="mx-auto h-12 w-12 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">

@@ -88,16 +88,29 @@ const QuizForm = () => {
     });
   };
 
-  const handleSubmit = async (e) => {
+  // In QuizForm.jsx - handleSubmit
+ const handleSubmit = async (e) => {
     e.preventDefault();
     try {
       setLoading(true);
       setError(null);
+
+      // *** CHANGE DATA STRUCTURE SENT ***
       const quizData = {
-        ...formData,
-        questionIds: selectedQuestions.map(q => q.id),
-        questions: selectedQuestions
+        ...formData, // Has title, desc, etc. BUT ALSO old questionIds field we don't need
+
+        // Send ONLY the IDs now, matching QuizRequestDTO
+        questionIds: selectedQuestions.map(q => q.id) 
+
+        // REMOVE the 'questions' array of objects
+        // questions: selectedQuestions.map(q => ({ id: q.id })) // REMOVE THIS
       };
+
+      // Remove the potentially confusing field from formData before logging/sending
+      delete quizData.questions; // Clean up if formData still had 'questions' field
+
+      console.log("Submitting quizData with questionIds:", JSON.stringify(quizData, null, 2));
+
       if (isEdit) {
         await quizAPI.updateQuiz(parseInt(id), quizData);
       } else {
@@ -105,8 +118,7 @@ const QuizForm = () => {
       }
       navigate('/faculty/my-quizzes');
     } catch (err) {
-      setError('Failed to save quiz. Please try again.');
-      console.error('Error saving quiz:', err);
+       // ... (error handling) ...
     } finally {
       setLoading(false);
     }
