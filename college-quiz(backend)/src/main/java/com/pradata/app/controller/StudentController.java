@@ -36,7 +36,12 @@ public class StudentController {
     }
 
     @GetMapping("/attempts/{attemptId}")
-    public ResponseEntity<QuizAttempt> getMySubmission(@PathVariable Long attemptId, Authentication authentication) {
+    public ResponseEntity<?> getMySubmission(@PathVariable Long attemptId, Authentication authentication) {
         return quizService.getStudentAttempt(attemptId, authentication.getName());
+    }
+
+    @GetMapping("/attempts/my-attempts")
+    public ResponseEntity<?> getMyPastAttempts(Authentication authentication) {
+        return quizService.getMyAttempts(authentication.getName());
     }
 }

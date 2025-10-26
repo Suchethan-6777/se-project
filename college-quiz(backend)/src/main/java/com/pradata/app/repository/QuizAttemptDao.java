@@ -27,4 +27,6 @@ public interface QuizAttemptDao extends JpaRepository<QuizAttempt, Long> { // Us
      @Modifying
      @Query("DELETE FROM QuizAttempt qa WHERE qa.student.id = :studentId")
      void deleteByStudentId(@Param("studentId") Long studentId);
+
+    List<QuizAttempt> findByStudentIdOrderBySubmissionTimeDesc(Long studentId);
 }

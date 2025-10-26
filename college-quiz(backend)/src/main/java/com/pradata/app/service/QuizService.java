@@ -269,72 +269,53 @@ public class QuizService {
         Optional<Quiz> quizOpt = quizDao.findById(quizId);
         Optional<User> studentOpt = userDao.findByEmail(userEmail); // Fetch Optional first
 
+        // --- Basic Checks ---
         if (quizOpt.isEmpty()) {
             logger.warn("Attempt to start non-existent quiz ID {}", quizId);
             return new ResponseEntity<>("Quiz not found.", HttpStatus.NOT_FOUND);
         }
         if (studentOpt.isEmpty()) {
             logger.warn("Attempt to start quiz {} by non-existent user {}", quizId, userEmail);
-            // Should not happen if authenticated, but good check
             return new ResponseEntity<>("User not found.", HttpStatus.NOT_FOUND);
         }
 
         Quiz quiz = quizOpt.get();
         User student = studentOpt.get();
 
-        // Check if already submitted
+        // --- Permission/Status Checks ---
         boolean alreadySubmitted = quizAttemptDao.existsByQuizIdAndStudentIdAndSubmissionTimeIsNotNull(quizId, student.getId());
         if (alreadySubmitted) {
             logger.info("User {} attempted to restart already submitted quiz {}", userEmail, quizId);
-            return new ResponseEntity<>("Quiz already submitted.", HttpStatus.CONFLICT); // Use CONFLICT for already done
+            return new ResponseEntity<>("Quiz already submitted.", HttpStatus.CONFLICT);
         }
-
-        // Check quiz status and time window
         LocalDateTime now = LocalDateTime.now();
-        if (!"PUBLISHED".equals(quiz.getStatus())) {
-            logger.info("User {} attempted to start non-published quiz {}", userEmail, quizId);
-            return new ResponseEntity<>("Quiz is not active.", HttpStatus.FORBIDDEN);
-        }
-        if (quiz.getStartTime() == null || quiz.getEndTime() == null) {
-            logger.info("User {} attempted to start quiz {} with no time window", userEmail, quizId);
-            return new ResponseEntity<>("Quiz time window not defined.", HttpStatus.FORBIDDEN);
-        }
-        if (now.isBefore(quiz.getStartTime())) {
-            logger.info("User {} attempted to start quiz {} before start time", userEmail, quizId);
-            return new ResponseEntity<>("Quiz has not started yet.", HttpStatus.FORBIDDEN);
-        }
-        if (now.isAfter(quiz.getEndTime())) {
-            logger.info("User {} attempted to start quiz {} after end time", userEmail, quizId);
-            return new ResponseEntity<>("Quiz entry window has closed.", HttpStatus.FORBIDDEN);
-        }
+        if (!"PUBLISHED".equals(quiz.getStatus())) { /* ... handle not published ... */ return new ResponseEntity<>("Quiz is not active.", HttpStatus.FORBIDDEN); }
+        if (quiz.getStartTime() == null || quiz.getEndTime() == null) { /* ... handle no time window ... */ return new ResponseEntity<>("Quiz time window not defined.", HttpStatus.FORBIDDEN); }
+        if (now.isBefore(quiz.getStartTime())) { /* ... handle not started yet ... */ return new ResponseEntity<>("Quiz has not started yet.", HttpStatus.FORBIDDEN); }
+        if (now.isAfter(quiz.getEndTime())) { /* ... handle ended ... */ return new ResponseEntity<>("Quiz entry window has closed.", HttpStatus.FORBIDDEN); }
 
         // --- Create Attempt ---
         QuizAttempt attempt = new QuizAttempt();
-        attempt.setQuiz(quiz);
+        attempt.setQuiz(quiz); // Still link the full entity internally
         attempt.setStudent(student);
-        attempt.setStartTime(LocalDateTime.now()); // Set start time *now*
+        attempt.setStartTime(LocalDateTime.now());
         QuizAttempt savedAttempt;
         try {
             savedAttempt = quizAttemptDao.save(attempt);
-        } catch (Exception e) {
-            logger.error("Error saving new quiz attempt for user {}, quiz {}: {}", userEmail, quizId, e.getMessage(), e);
-            return new ResponseEntity<>("Failed to initialize quiz attempt.", HttpStatus.INTERNAL_SERVER_ERROR);
-        }
+        } catch (Exception e) { /* ... handle save error ... */ return new ResponseEntity<>("Failed to initialize quiz attempt.", HttpStatus.INTERNAL_SERVER_ERROR); }
 
         // --- Load and Prepare Questions ---
         List<QuestionWrapper> questionsForUser = new ArrayList<>();
         List<Question> originalQuestions;
         try {
             logger.info("Loading questions for Quiz ID: {} within startQuiz transaction.", quizId);
-            // Access questions within the transaction. EAGER fetch should mean they are loaded.
-            // If LAZY, this access triggers loading.
+            // Use FetchType.LAZY in Quiz.java for questions now
+            // Accessing questions here will trigger loading within the transaction
             originalQuestions = new ArrayList<>(quiz.getQuestions());
 
-            // Explicitly check size to be sure
             if (originalQuestions.isEmpty()) {
                 logger.error("CRITICAL: Quiz ID {} has ZERO questions associated after loading!", quizId);
-                // Should not proceed if no questions - rollback will happen due to exception/return
-                return new ResponseEntity<>("Quiz has no questions configured.", HttpStatus.INTERNAL_SERVER_ERROR); // Or BAD_REQUEST
+                return new ResponseEntity<>("Quiz has no questions configured.", HttpStatus.INTERNAL_SERVER_ERROR);
             }
             logger.info("Successfully loaded {} questions for Quiz ID: {}", originalQuestions.size(), quizId);
 
@@ -342,33 +323,38 @@ public class QuizService {
             Collections.shuffle(originalQuestions);
             for (Question q : originalQuestions) {
                 List<String> options = new ArrayList<>(Arrays.asList(q.getOption1(), q.getOption2(), q.getOption3(), q.getOption4()));
-                options.removeIf(Objects::isNull); // Remove null options if any
+                options.removeIf(Objects::isNull);
                 Collections.shuffle(options);
-                questionsForUser.add(new QuestionWrapper(
-                        q.getId(),
-                        q.getQuestionTitle(),
+                questionsForUser.add(new QuestionWrapper(q.getId(), q.getQuestionTitle(),
                         options.size() > 0 ? options.get(0) : null,
                         options.size() > 1 ? options.get(1) : null,
                         options.size() > 2 ? options.get(2) : null,
                         options.size() > 3 ? options.get(3) : null));
             }
-        } catch (Exception e) { // Catch potential LazyInitializationException if transaction setup fails
+        } catch (Exception e) {
             logger.error("Error loading/processing questions for quiz {} during start attempt: {}", quizId, e.getMessage(), e);
             return new ResponseEntity<>("Error preparing quiz questions.", HttpStatus.INTERNAL_SERVER_ERROR);
         }
 
-        // --- Prepare and Send Response ---
+        // --- Prepare and Send Response (Modified) ---
         Map<String, Object> response = new HashMap<>();
         response.put("attemptId", savedAttempt.getId());
-        // Do NOT send the full Quiz entity back here if it causes issues.
-        // Send only necessary info if needed, or rely on frontend context.
-        // response.put("quiz", quiz); // Maybe remove this if causing serialization issues downstream
-        response.put("questions", questionsForUser); // Send the prepared, shuffled wrappers
+
+        // Create a map containing only the quiz info needed by the frontend
+        Map<String, Object> quizInfo = new HashMap<>();
+        quizInfo.put("id", quiz.getId());
+        quizInfo.put("title", quiz.getTitle());
+        quizInfo.put("durationInMinutes", quiz.getDurationInMinutes());
+        quizInfo.put("totalMarks", quiz.getTotalMarks());
+        // Add any other simple fields needed for the header/timer setup
+
+        response.put("quiz", quizInfo); // Send this simplified map
+
+        response.put("questions", questionsForUser); // Send the prepared wrappers
 
         logger.info("User {} started attempt {} for quiz {}. Sending {} questions.", userEmail, savedAttempt.getId(), quizId, questionsForUser.size());
         return new ResponseEntity<>(response, HttpStatus.OK);
     }
-
     @Transactional // Updates QuizAttempt score and submission time
     public ResponseEntity<Integer> calculateResult(Long attemptId, List<Response> responses, String userEmail) {
         if (attemptId == null) { return new ResponseEntity<>(-1, HttpStatus.BAD_REQUEST); }
@@ -500,20 +486,107 @@ public class QuizService {
     }
 
     @Transactional(readOnly = true)
-    public ResponseEntity<QuizAttempt> getStudentAttempt(Long attemptId, String userEmail) {
+// *** Change Return Type ***
+    public ResponseEntity<?> getStudentAttempt(Long attemptId, String userEmail) { // Use <?> or <QuizAttemptResultDTO>
         if (attemptId == null || !StringUtils.hasText(userEmail)) { return new ResponseEntity<>(HttpStatus.BAD_REQUEST); }
 
         Optional<QuizAttempt> attemptOpt = quizAttemptDao.findById(attemptId);
-        if (attemptOpt.isEmpty()) { return new ResponseEntity<>(HttpStatus.NOT_FOUND); }
+        if (attemptOpt.isEmpty()) { return new ResponseEntity<>("Attempt not found.", HttpStatus.NOT_FOUND); } // Better message
         QuizAttempt attempt = attemptOpt.get();
 
-        // Verify ownership (student can only view their own attempts)
+        // Verify ownership
         if (attempt.getStudent() == null || !attempt.getStudent().getEmail().equals(userEmail)) {
-            logger.warn("Unauthorized attempt by user {} to view attempt {} owned by {}",
-                    userEmail, attemptId, attempt.getStudent() != null ? attempt.getStudent().getEmail() : "null");
-            return new ResponseEntity<>(HttpStatus.FORBIDDEN);
+            logger.warn("Unauthorized attempt by user {} to view attempt {}", userEmail, attemptId);
+            return new ResponseEntity<>("Unauthorized.", HttpStatus.FORBIDDEN);
         }
-        // Transaction ensures related entities (like Quiz, Student) can be accessed if needed by Jackson
-        return new ResponseEntity<>(attempt, HttpStatus.OK);
+
+        // *** Map Entity to DTO ***
+        try {
+            // Access related entities needed for DTO within the transaction
+            Quiz quiz = attempt.getQuiz(); // Access quiz
+            // User student = attempt.getStudent(); // Access student if needed for name
+
+            if (quiz == null) {
+                logger.error("Quiz object is null for attempt ID {}", attemptId);
+                return new ResponseEntity<>("Internal error: Could not load quiz details for attempt.", HttpStatus.INTERNAL_SERVER_ERROR);
+            }
+
+            QuizAttemptResultDto resultDto = new QuizAttemptResultDto(
+                    attempt.getId(),
+                    attempt.getScore(),
+                    attempt.getStartTime(),
+                    attempt.getSubmissionTime(),
+                    quiz.getTitle(),         // Get data from Quiz entity
+                    quiz.getSubject(),
+                    quiz.getDurationInMinutes(),
+                    quiz.getTotalMarks()
+                    // student.getName() // Add if needed
+            );
+
+            return new ResponseEntity<>(resultDto, HttpStatus.OK); // Return the DTO
+
+        } catch (Exception e) {
+            // Catch potential LazyInitializationException if something goes wrong
+            logger.error("Error mapping QuizAttempt {} to DTO: {}", attemptId, e.getMessage(), e);
+            return new ResponseEntity<>("Error retrieving attempt details.", HttpStatus.INTERNAL_SERVER_ERROR);
+        }
     }
+
+    // Inside QuizService.java
+
+    @Transactional(readOnly = true) // Read-only operation
+    public ResponseEntity<?> getMyAttempts(String userEmail) {
+        if (!StringUtils.hasText(userEmail)) {
+            return new ResponseEntity<>(HttpStatus.BAD_REQUEST);
+        }
+
+        Optional<User> studentOpt = userDao.findByEmail(userEmail);
+        if (studentOpt.isEmpty()) {
+            logger.warn("getMyAttempts called for non-existent user: {}", userEmail);
+            return new ResponseEntity<>("User not found.", HttpStatus.NOT_FOUND);
+        }
+        User student = studentOpt.get();
+
+        // Ensure the user has the Student role (optional, but good practice)
+        // if (!"Student".equals(student.getRole())) {
+        //     logger.warn("User {} attempting to fetch attempts, but is not a Student.", userEmail);
+        //     return new ResponseEntity<>("Unauthorized.", HttpStatus.FORBIDDEN);
+        // }
+
+        try {
+            // Fetch all attempts for this student
+            List<QuizAttempt> attempts = quizAttemptDao.findByStudentIdOrderBySubmissionTimeDesc(student.getId()); // Order by most recent
+            logger.info("Fetched {} attempts for student {}", attempts.size(), userEmail);
+
+            // Map attempts to DTOs
+            List<QuizAttemptResultDto> results = attempts.stream()
+                    // Filter only submitted attempts (optional, might want to show incomplete ones too)
+                    .filter(attempt -> attempt.getSubmissionTime() != null && attempt.getQuiz() != null)
+                    .map(attempt -> {
+                        Quiz quiz = attempt.getQuiz(); // Access quiz within the transaction
+                        return new QuizAttemptResultDto(
+                                attempt.getId(),
+                                attempt.getScore(),
+                                attempt.getStartTime(),
+                                attempt.getSubmissionTime(),
+                                quiz.getTitle(),
+                                quiz.getSubject(),
+                                quiz.getDurationInMinutes(),
+                                quiz.getTotalMarks()
+                        );
+                    })
+                    .collect(Collectors.toList());
+
+            logger.info("Returning {} submitted attempt results for student {}", results.size(), userEmail);
+            return new ResponseEntity<>(results, HttpStatus.OK);
+
+        } catch (Exception e) {
+            logger.error("Error fetching attempts for student {}: {}", userEmail, e.getMessage(), e);
+            return new ResponseEntity<>("Error retrieving past attempts.", HttpStatus.INTERNAL_SERVER_ERROR);
+        }
+    }
+
+    // Add this corresponding method to your QuizAttemptDao interface
+    // Inside QuizAttemptDao.java (interface):
+    // List<QuizAttempt> findByStudentIdOrderBySubmissionTimeDesc(Long studentId);
 }

@@ -17,6 +17,7 @@ import QuizInstructions from './pages/student/QuizInstructions';
 import QuizTaking from './pages/student/QuizTaking';
 import QuizResult from './pages/student/QuizResult';
 import StudentProfile from './pages/student/StudentProfile';
+import StudentMyAttempts from './pages/student/StudentMyAttempts';
 
 import FacultyDashboard from './pages/faculty/FacultyDashboard';
 import FacultyQuizzes from './pages/faculty/FacultyQuizzes';
@@ -74,7 +75,9 @@ function App() {
             <Route path="quiz/:id/taking" element={<QuizTaking />} />
             <Route path="quiz/result/:attemptId" element={<QuizResult />} />
             <Route path="profile" element={<StudentProfile />} />
+            <Route path="my-attempts" element={<StudentMyAttempts />} />
             <Route path="*" element={<Navigate to="/student/dashboard" replace />} />
+            
           </Route>
 
           {/* Protected Faculty Routes */}

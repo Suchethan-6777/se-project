@@ -125,6 +125,8 @@ export const studentAPI = {
   
   // Get attempt result
   getAttemptResult: (attemptId) => api.get(`/api/student/attempts/${attemptId}`),
+
+  getMyAttempts: () => api.get('/api/student/attempts/my-attempts'),
 };
 
 export const adminAPI = {
