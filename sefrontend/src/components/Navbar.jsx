@@ -101,7 +101,7 @@ const Navbar = () => {
                 </svg>
               </div>
               <span className="text-xl font-bold text-gray-900 dark:text-white transition-colors">
-                Quiz System
+                College Quiz 
               </span>
             </Link>
           </div>
